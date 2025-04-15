@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -19,6 +20,8 @@ const (
 	PaperproxyPaperlessHostEnvKey  = "PAPERLESS_HOST"
 
 	PaperproxyPaperlessApiKeyEnvKey = "PAPERLESS_API_KEY"
+
+	PaperproxyPaperlessTagEnvKey = "PAPERLESS_TAG"
 )
 
 func processFile(paperless *client.Client, filePath string) error {
@@ -57,6 +60,15 @@ func main() {
 		panic("PAPERLESS_API_KEY must be set")
 	}
 
+	var tag *int
+	if t, ok := os.LookupEnv(PaperproxyPaperlessTagEnvKey); ok {
+		passedTag, err := strconv.Atoi(t)
+		if err != nil {
+			panic("PAPERLESS_TAG must be a number")
+		}
+		tag = &passedTag
+	}
+
 	slog.Info("starting paperless-sftp-rest-adapter", "watchdir", watchDir, "paperless-host", paperlessHost)
 
 	watcher, err := fsnotify.NewWatcher()
@@ -65,7 +77,7 @@ func main() {
 	}
 	defer watcher.Close()
 
-	paperless := client.New(paperlessHost, paperlessApiKey)
+	paperless := client.New(paperlessHost, paperlessApiKey, tag)
 
 	slog.Info("running startup reconcile")
 	files, err := os.ReadDir(watchDir)

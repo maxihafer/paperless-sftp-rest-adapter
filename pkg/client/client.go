@@ -10,11 +10,12 @@ import (
 	"path/filepath"
 )
 
-func New(baseURL, token string) *Client {
+func New(baseURL, token string, tag *int) *Client {
 	return &Client{
 		baseURL:    baseURL,
 		token:      token,
 		httpClient: http.DefaultClient,
+		tag:        tag,
 	}
 }
 
@@ -22,6 +23,7 @@ type Client struct {
 	baseURL    string
 	token      string
 	httpClient *http.Client
+	tag        *int
 }
 
 func (c *Client) UploadDocument(filePath string) (*string, error) {
@@ -38,9 +40,14 @@ func (c *Client) UploadDocument(filePath string) (*string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create form file: %w", err)
 	}
-
 	if _, err := io.Copy(part, file); err != nil {
 		return nil, fmt.Errorf("failed to copy file: %w", err)
+	}
+
+	if c.tag != nil {
+		if err := writer.WriteField("tags", fmt.Sprintf("%d", *c.tag)); err != nil {
+			return nil, fmt.Errorf("failed to write 'tag' field: %w", err)
+		}
 	}
 
 	if err := writer.Close(); err != nil {
