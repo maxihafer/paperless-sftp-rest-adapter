@@ -1,10 +1,14 @@
 package main
 
 import (
+	"fmt"
 	"github.com/fsnotify/fsnotify"
 	"github.com/maxihafer/paperless-sftp-rest-adapter/pkg/client"
 	"log/slog"
+	"math"
 	"os"
+	"sync"
+	"time"
 )
 
 const (
@@ -16,6 +20,19 @@ const (
 
 	PaperproxyPaperlessApiKeyEnvKey = "PAPERLESS_API_KEY"
 )
+
+func processFile(paperless *client.Client, filePath string) error {
+	id, err := paperless.UploadDocument(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to upload document: %w", err)
+	}
+	slog.Info("document processed", "file", filePath, "id", id)
+	if err := os.Remove(filePath); err != nil {
+		return fmt.Errorf("failed to delete file after successful upload: %w", err)
+	}
+	slog.Debug("cleanup complete", "file", filePath)
+	return nil
+}
 
 func main() {
 	level := LogLevelFromEnv()
@@ -50,7 +67,30 @@ func main() {
 
 	paperless := client.New(paperlessHost, paperlessApiKey)
 
+	slog.Info("running startup reconcile")
+	files, err := os.ReadDir(watchDir)
+	if err != nil {
+		slog.Error("failed to list directory for startup reconcile", "err", err)
+		os.Exit(1)
+	}
+	if len(files) > 0 {
+		slog.Group("startup-reconcile")
+		slog.Warn("cleaning up orphaned files", "count", len(files), "watchdir", watchDir)
+
+		for _, file := range files {
+			if err := processFile(paperless, file.Name()); err != nil {
+				slog.Error("failed while processing file", "err", err)
+			}
+		}
+	}
+
 	go func() {
+		var (
+			waitFor = 100 * time.Millisecond
+			mu      sync.Mutex
+			timers  = make(map[string]*time.Timer)
+		)
+
 		for {
 			select {
 			case event, ok := <-watcher.Events:
@@ -59,19 +99,30 @@ func main() {
 				}
 				slog.Debug("watched event", "event", event)
 
-				if event.Has(fsnotify.Create) {
-					slog.Info("processing file", "file", event.Name)
-					if id, err := paperless.UploadDocument(event.Name); err != nil {
-						slog.Error("failed to upload document", "file", event.Name, "error", err)
-					} else {
-						slog.Info("uploaded document", "file", event.Name, "id", id)
-						if err := os.Remove(event.Name); err != nil {
-							slog.Error("failed to remove file after upload", "file", event.Name, "error", err)
-						} else {
-							slog.Info("removed file after upload", "file", event.Name)
-						}
-					}
+				if !event.Has(fsnotify.Create) && !event.Has(fsnotify.Write) {
+					continue
 				}
+
+				mu.Lock()
+				t, ok := timers[event.Name]
+				mu.Unlock()
+
+				if !ok {
+					t = time.AfterFunc(math.MaxInt64, func() {
+						if err := processFile(paperless, event.Name); err != nil {
+							slog.Error("failed to process file", "err", err)
+							return
+						}
+					})
+					t.Stop()
+
+					mu.Lock()
+					timers[event.Name] = t
+					mu.Unlock()
+				}
+
+				t.Reset(waitFor)
+
 			case err, ok := <-watcher.Errors:
 				if !ok {
 					return
